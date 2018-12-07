@@ -1,192 +1,240 @@
 -------------------------------- MODULE main --------------------------------
 EXTENDS TLC, Integers, Sequences, FiniteSets
 
-CONSTANTS Servers, NULL
+CONSTANTS Servers, MaxMsgs, NULL
 
-States == {"follower", "candidate", "leader"}
+CONSTANTS FOLLOWER, CANDIDATE, LEADER
+
+
+
+Range(fn) == {fn[i]:  i \in DOMAIN fn}
 
 (*--algorithm main
 variables
-    vote_requests = [s \in Servers |-> NULL],
-    append_entries = [s \in Servers |-> NULL],
-    vote_responses = [s \in Servers |-> NULL],
-    append_responses = [s \in Servers |-> NULL];
-    
+  vote_responses = [s \in Servers |-> {}],
+  vote_requests = [s \in Servers |-> {}]; \* [dest1 |-> { msg1, msg2 }]
+
 define
-EligibleVoters == {s \in Servers: vote_requests[s] = NULL}
+  ValidVoteRequest(current_term, voted_for, msg) ==
+      /\ current_term <= msg.term
+      /\ (voted_for = NULL \/ voted_for = msg.source) 
 end define;
 
+macro vote_response(target, message) begin
+  vote_responses[target] := 
+    vote_responses[target] \union {[source |-> self] @@ message};
+  end if;
+end macro;
+
+macro start_election() begin
+  current_term := current_term + 1;
+  voted_for := self;
+  votes_for_me := 1;
+  vote_requests := [
+    s \in Servers \ {self} |-> 
+      vote_requests[s] \union {[source |-> self, term |-> current_term]}
+  ] @@ vote_requests
+end macro;
+
 process server \in Servers
-variable
-  state = "follower",
-  term = 0,
-  leader = NULL,
+variables
+  current_term = 0,
+  server_role = FOLLOWER,
   voted_for = NULL,
-  num_votes_for_me = 0,
-  entries = <<>>;
+  votes_for_me = 0;
 begin
 Follower:
-  \* heartbeat
-  if append_entries[self] /= NULL then
-    if append_entries[self].term < term then
-      append_responses[self] := [term |-> term, success |-> FALSE]; 
-      append_entries[self] := NULL;
-    else \* the heartbeat is legitimate
-      term := append_entries[self].term;
-      leader := append_entries[self].source;
-      \* append entries
-      \* respond with term and success
-      goto Follower;
-    end if;
-  end if;
-  \* vote request
-  CheckVoteRequets:
-  if vote_requests[self] /= NULL then
-    skip; 
-    \* vote_responses[self] := [term |-> term, voteGranted |-> FALSE]
-  end if;
+  await server_role = FOLLOWER;
+  HandleVoteRequests:
+  while Cardinality(vote_requests[self]) > 0 do
+    with msg \in vote_requests[self] do
+        if ValidVoteRequest(current_term, voted_for, msg) then
+          current_term := msg.term;
+          voted_for := msg.source;
+        end if;     
+        vote_response(
+          msg.source,
+          [ term |-> current_term
+          , vote_granted |-> ValidVoteRequest(current_term, voted_for, msg)]
+        )
+    end with;
+  end while;
+  \* handle append entries heartbeat
+  \* if valid heartbeat: go back to follower label; no timeout.
+  
   either
-    goto Follower;
+    goto Follower; \* no timeout
   or
+    server_role := CANDIDATE; \* timed out, seize power
+    start_election();
     goto Candidate;
   end either;
-  \* if we get a vote request, look at it.
-  \* if vote request is valid, respond and remain follower
-  \* if we get a heartbeat, look at it.
-  \* if it's valid, remain follower ("goto follower") (and set leader to leader)
-  \* either stay follower, or, goto candidate
 Candidate:
-  state := "candidate";
-  term := term + 1;
-  voted_for := self;
-  num_votes_for_me := 1; \* resetting if we time out and decide to re-run
-  RequestVotes:
-  while Cardinality(EligibleVoters \ { self }) > 0 do
-    \* candidate magically knows who's already voted, then only sends to non-voters  
-    SendVoteRequest:
-      with voter \in EligibleVoters do
-        vote_requests[voter] := [term |-> term, candidateId |-> self];
-      end with;
+  await server_role = CANDIDATE;
+  HandleVoteResponses:
+  while Cardinality(vote_responses[self]) > 0 do
+    with msg \in vote_responses[self] do
+      if msg.term > current_term then
+        current_term := msg.term;
+        server_role := FOLLOWER;
+        goto Follower;        
+      elsif msg.vote_granted then
+        votes_for_me := votes_for_me + 1;
+        if votes_for_me * 2 > Cardinality(Servers) then
+          server_role := LEADER;
+          goto Leader;
+        end if;
+      end if;
+    end with;
   end while;
-  
-  \* await votes
-  \* vote for self
-  \* send requests for votes
-  \* handle responses from other servers
-    \* if term is higher, go to follower
-    \* if we got the majority of votes, go to leader.
-    \* if not, either: go to candidate, or, decrement term and go to candidate ("wait")
   either
+    goto Candidate; \* no timeout
+  or
+    start_election(); \* timeout, start a new election
     goto Candidate;
-  
-  skip;
+  end either;
 Leader:
-  state := "leader";
-  \* send heartbeat
-  \* if response has higher term: goto follower
+  await server_role = LEADER;
+  LeaderHandleVoteRequests:
+  while Cardinality(vote_requests[self]) > 0 do
+    with msg \in vote_requests[self] do
+      if msg.term > current_term then
+        current_term := msg.term;
+        server_role := FOLLOWER;
+        goto Follower;
+      end if;
+    end with;
+  end while;
   skip;
-  
 end process;
-end algorithm; *)
 
+end algorithm; *)
 \* BEGIN TRANSLATION
-VARIABLES vote_requests, append_entries, vote_responses, append_responses, pc
+VARIABLES vote_responses, vote_requests, pc
 
 (* define statement *)
-EligibleVoters == {s \in Servers: vote_requests[s] = NULL}
+ValidVoteRequest(current_term, voted_for, msg) ==
+    /\ current_term <= msg.term
+    /\ (voted_for = NULL \/ voted_for = msg.source)
 
-VARIABLES state, term, leader, voted_for, num_votes_for_me, entries
+VARIABLES current_term, server_role, voted_for, votes_for_me
 
-vars == << vote_requests, append_entries, vote_responses, append_responses, 
-           pc, state, term, leader, voted_for, num_votes_for_me, entries >>
+vars == << vote_responses, vote_requests, pc, current_term, server_role, 
+           voted_for, votes_for_me >>
 
 ProcSet == (Servers)
 
 Init == (* Global variables *)
-        /\ vote_requests = [s \in Servers |-> NULL]
-        /\ append_entries = [s \in Servers |-> NULL]
-        /\ vote_responses = [s \in Servers |-> NULL]
-        /\ append_responses = [s \in Servers |-> NULL]
+        /\ vote_responses = [s \in Servers |-> {}]
+        /\ vote_requests = [s \in Servers |-> {}]
         (* Process server *)
-        /\ state = [self \in Servers |-> "follower"]
-        /\ term = [self \in Servers |-> 0]
-        /\ leader = [self \in Servers |-> NULL]
+        /\ current_term = [self \in Servers |-> 0]
+        /\ server_role = [self \in Servers |-> FOLLOWER]
         /\ voted_for = [self \in Servers |-> NULL]
-        /\ num_votes_for_me = [self \in Servers |-> 0]
-        /\ entries = [self \in Servers |-> <<>>]
+        /\ votes_for_me = [self \in Servers |-> 0]
         /\ pc = [self \in ProcSet |-> "Follower"]
 
 Follower(self) == /\ pc[self] = "Follower"
-                  /\ IF append_entries[self] /= NULL
-                        THEN /\ IF append_entries[self].term < term[self]
-                                   THEN /\ append_responses' = [append_responses EXCEPT ![self] = [term |-> term[self], success |-> FALSE]]
-                                        /\ append_entries' = [append_entries EXCEPT ![self] = NULL]
-                                        /\ pc' = [pc EXCEPT ![self] = "CheckVoteRequets"]
-                                        /\ UNCHANGED << term, leader >>
-                                   ELSE /\ term' = [term EXCEPT ![self] = append_entries[self].term]
-                                        /\ leader' = [leader EXCEPT ![self] = append_entries[self].source]
-                                        /\ pc' = [pc EXCEPT ![self] = "Follower"]
-                                        /\ UNCHANGED << append_entries, 
-                                                        append_responses >>
-                        ELSE /\ pc' = [pc EXCEPT ![self] = "CheckVoteRequets"]
-                             /\ UNCHANGED << append_entries, append_responses, 
-                                             term, leader >>
-                  /\ UNCHANGED << vote_requests, vote_responses, state, 
-                                  voted_for, num_votes_for_me, entries >>
+                  /\ server_role[self] = FOLLOWER
+                  /\ pc' = [pc EXCEPT ![self] = "HandleVoteRequests"]
+                  /\ UNCHANGED << vote_responses, vote_requests, current_term, 
+                                  server_role, voted_for, votes_for_me >>
 
-CheckVoteRequets(self) == /\ pc[self] = "CheckVoteRequets"
-                          /\ IF vote_requests[self] /= NULL
-                                THEN /\ TRUE
-                                ELSE /\ TRUE
-                          /\ \/ /\ pc' = [pc EXCEPT ![self] = "Follower"]
-                             \/ /\ pc' = [pc EXCEPT ![self] = "Candidate"]
-                          /\ UNCHANGED << vote_requests, append_entries, 
-                                          vote_responses, append_responses, 
-                                          state, term, leader, voted_for, 
-                                          num_votes_for_me, entries >>
+HandleVoteRequests(self) == /\ pc[self] = "HandleVoteRequests"
+                            /\ IF Cardinality(vote_requests[self]) > 0
+                                  THEN /\ \E msg \in vote_requests[self]:
+                                            /\ IF ValidVoteRequest(current_term[self], voted_for[self], msg)
+                                                  THEN /\ current_term' = [current_term EXCEPT ![self] = msg.term]
+                                                       /\ voted_for' = [voted_for EXCEPT ![self] = msg.source]
+                                                  ELSE /\ TRUE
+                                                       /\ UNCHANGED << current_term, 
+                                                                       voted_for >>
+                                            /\ vote_responses' = [vote_responses EXCEPT ![(msg.source)] = vote_responses[(msg.source)] \union {[source |-> self] @@ ([ term |-> current_term'[self]
+                                                                                                                                                                     , vote_granted |-> ValidVoteRequest(current_term'[self], voted_for'[self], msg)])}]
+                                       /\ pc' = [pc EXCEPT ![self] = "HandleVoteRequests"]
+                                       /\ UNCHANGED << vote_requests, 
+                                                       server_role, 
+                                                       votes_for_me >>
+                                  ELSE /\ \/ /\ pc' = [pc EXCEPT ![self] = "Follower"]
+                                             /\ UNCHANGED <<vote_requests, current_term, server_role, voted_for, votes_for_me>>
+                                          \/ /\ server_role' = [server_role EXCEPT ![self] = CANDIDATE]
+                                             /\ current_term' = [current_term EXCEPT ![self] = current_term[self] + 1]
+                                             /\ voted_for' = [voted_for EXCEPT ![self] = self]
+                                             /\ votes_for_me' = [votes_for_me EXCEPT ![self] = 1]
+                                             /\ vote_requests' =                  [
+                                                                   s \in Servers \ {self} |->
+                                                                     vote_requests[s] \union {[source |-> self, term |-> current_term'[self]]}
+                                                                 ] @@ vote_requests
+                                             /\ pc' = [pc EXCEPT ![self] = "Candidate"]
+                                       /\ UNCHANGED vote_responses
 
 Candidate(self) == /\ pc[self] = "Candidate"
-                   /\ state' = [state EXCEPT ![self] = "candidate"]
-                   /\ term' = [term EXCEPT ![self] = term[self] + 1]
-                   /\ voted_for' = [voted_for EXCEPT ![self] = self]
-                   /\ num_votes_for_me' = [num_votes_for_me EXCEPT ![self] = 1]
-                   /\ pc' = [pc EXCEPT ![self] = "RequestVotes"]
-                   /\ UNCHANGED << vote_requests, append_entries, 
-                                   vote_responses, append_responses, leader, 
-                                   entries >>
+                   /\ server_role[self] = CANDIDATE
+                   /\ pc' = [pc EXCEPT ![self] = "HandleVoteResponses"]
+                   /\ UNCHANGED << vote_responses, vote_requests, current_term, 
+                                   server_role, voted_for, votes_for_me >>
 
-RequestVotes(self) == /\ pc[self] = "RequestVotes"
-                      /\ IF Cardinality(EligibleVoters \ { self }) > 0
-                            THEN /\ pc' = [pc EXCEPT ![self] = "SendVoteRequest"]
-                            ELSE /\ IF Cardinality({s \in Servers: vote_responses[s] /= NULL}) > 0
-                                       THEN /\ TRUE
-                                       ELSE /\ TRUE
-                                 /\ TRUE
-                                 /\ pc' = [pc EXCEPT ![self] = "Leader"]
-                      /\ UNCHANGED << vote_requests, append_entries, 
-                                      vote_responses, append_responses, state, 
-                                      term, leader, voted_for, 
-                                      num_votes_for_me, entries >>
-
-SendVoteRequest(self) == /\ pc[self] = "SendVoteRequest"
-                         /\ \E voter \in EligibleVoters:
-                              vote_requests' = [vote_requests EXCEPT ![voter] = [term |-> term[self], candidateId |-> self]]
-                         /\ pc' = [pc EXCEPT ![self] = "RequestVotes"]
-                         /\ UNCHANGED << append_entries, vote_responses, 
-                                         append_responses, state, term, leader, 
-                                         voted_for, num_votes_for_me, entries >>
+HandleVoteResponses(self) == /\ pc[self] = "HandleVoteResponses"
+                             /\ IF Cardinality(vote_responses[self]) > 0
+                                   THEN /\ \E msg \in vote_responses[self]:
+                                             IF msg.term > current_term[self]
+                                                THEN /\ current_term' = [current_term EXCEPT ![self] = msg.term]
+                                                     /\ server_role' = [server_role EXCEPT ![self] = FOLLOWER]
+                                                     /\ pc' = [pc EXCEPT ![self] = "Follower"]
+                                                     /\ UNCHANGED votes_for_me
+                                                ELSE /\ IF msg.vote_granted
+                                                           THEN /\ votes_for_me' = [votes_for_me EXCEPT ![self] = votes_for_me[self] + 1]
+                                                                /\ IF votes_for_me'[self] * 2 > Cardinality(Servers)
+                                                                      THEN /\ server_role' = [server_role EXCEPT ![self] = LEADER]
+                                                                           /\ pc' = [pc EXCEPT ![self] = "Leader"]
+                                                                      ELSE /\ pc' = [pc EXCEPT ![self] = "HandleVoteResponses"]
+                                                                           /\ UNCHANGED server_role
+                                                           ELSE /\ pc' = [pc EXCEPT ![self] = "HandleVoteResponses"]
+                                                                /\ UNCHANGED << server_role, 
+                                                                                votes_for_me >>
+                                                     /\ UNCHANGED current_term
+                                        /\ UNCHANGED << vote_requests, 
+                                                        voted_for >>
+                                   ELSE /\ \/ /\ pc' = [pc EXCEPT ![self] = "Candidate"]
+                                              /\ UNCHANGED <<vote_requests, current_term, voted_for, votes_for_me>>
+                                           \/ /\ current_term' = [current_term EXCEPT ![self] = current_term[self] + 1]
+                                              /\ voted_for' = [voted_for EXCEPT ![self] = self]
+                                              /\ votes_for_me' = [votes_for_me EXCEPT ![self] = 1]
+                                              /\ vote_requests' =                  [
+                                                                    s \in Servers \ {self} |->
+                                                                      vote_requests[s] \union {[source |-> self, term |-> current_term'[self]]}
+                                                                  ] @@ vote_requests
+                                              /\ pc' = [pc EXCEPT ![self] = "Candidate"]
+                                        /\ UNCHANGED server_role
+                             /\ UNCHANGED vote_responses
 
 Leader(self) == /\ pc[self] = "Leader"
-                /\ state' = [state EXCEPT ![self] = "leader"]
-                /\ TRUE
-                /\ pc' = [pc EXCEPT ![self] = "Done"]
-                /\ UNCHANGED << vote_requests, append_entries, vote_responses, 
-                                append_responses, term, leader, voted_for, 
-                                num_votes_for_me, entries >>
+                /\ server_role[self] = LEADER
+                /\ pc' = [pc EXCEPT ![self] = "LeaderHandleVoteRequests"]
+                /\ UNCHANGED << vote_responses, vote_requests, current_term, 
+                                server_role, voted_for, votes_for_me >>
 
-server(self) == Follower(self) \/ CheckVoteRequets(self) \/ Candidate(self)
-                   \/ RequestVotes(self) \/ SendVoteRequest(self)
-                   \/ Leader(self)
+LeaderHandleVoteRequests(self) == /\ pc[self] = "LeaderHandleVoteRequests"
+                                  /\ IF Cardinality(vote_requests[self]) > 0
+                                        THEN /\ \E msg \in vote_requests[self]:
+                                                  IF msg.term > current_term[self]
+                                                     THEN /\ current_term' = [current_term EXCEPT ![self] = msg.term]
+                                                          /\ server_role' = [server_role EXCEPT ![self] = FOLLOWER]
+                                                          /\ pc' = [pc EXCEPT ![self] = "Follower"]
+                                                     ELSE /\ pc' = [pc EXCEPT ![self] = "LeaderHandleVoteRequests"]
+                                                          /\ UNCHANGED << current_term, 
+                                                                          server_role >>
+                                        ELSE /\ TRUE
+                                             /\ pc' = [pc EXCEPT ![self] = "Done"]
+                                             /\ UNCHANGED << current_term, 
+                                                             server_role >>
+                                  /\ UNCHANGED << vote_responses, 
+                                                  vote_requests, voted_for, 
+                                                  votes_for_me >>
+
+server(self) == Follower(self) \/ HandleVoteRequests(self)
+                   \/ Candidate(self) \/ HandleVoteResponses(self)
+                   \/ Leader(self) \/ LeaderHandleVoteRequests(self)
 
 Next == (\E self \in Servers: server(self))
            \/ (* Disjunct to prevent deadlock on termination *)
@@ -198,12 +246,13 @@ Termination == <>(\A self \in ProcSet: pc[self] = "Done")
 
 \* END TRANSLATION
 
-TypeInvariant ==
-  /\ \A s \in Servers: state[s] \in States
-  /\ Cardinality({s \in Servers: state[s] = "leader"}) <= 1
+MaxTerm == CHOOSE x \in Range(current_term): \A y \in Range(current_term): x >= y
+
+LatestTermHasAtMostOneLeader ==
+  Cardinality({s \in Servers: current_term[s] = MaxTerm /\ server_role[s] = LEADER}) <= 1
 
   
 =============================================================================
 \* Modification History
-\* Last modified Wed Dec 05 15:58:03 EST 2018 by john
+\* Last modified Fri Dec 07 14:19:42 EST 2018 by john
 \* Created Tue Dec 04 17:40:33 EST 2018 by john

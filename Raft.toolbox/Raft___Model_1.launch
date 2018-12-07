@@ -19,11 +19,11 @@
     <stringAttribute key="modelBehaviorNext" value=""/>
     <stringAttribute key="modelBehaviorSpec" value="Spec"/>
     <intAttribute key="modelBehaviorSpecType" value="1"/>
-    <stringAttribute key="modelBehaviorVars" value="state, entries, term, candidates, leaders, vote_requests, pc, leader, append_entries, votedFor, followers"/>
+    <stringAttribute key="modelBehaviorVars" value="voted_for, vote_responses, server_role, vote_requests, pc, votes_for_me, current_term"/>
     <stringAttribute key="modelComments" value=""/>
     <booleanAttribute key="modelCorrectnessCheckDeadlock" value="true"/>
     <listAttribute key="modelCorrectnessInvariants">
-        <listEntry value="1TypeInvariant"/>
+        <listEntry value="1LatestTermHasAtMostOneLeader"/>
     </listAttribute>
     <listAttribute key="modelCorrectnessProperties">
         <listEntry value="0Termination"/>
@@ -33,8 +33,12 @@
     <listAttribute key="modelParameterConstants">
         <listEntry value="Servers;;{s1, s2, s3};1;0"/>
         <listEntry value="NULL;;NULL;1;0"/>
+        <listEntry value="FOLLOWER;;FOLLOWER;1;0"/>
+        <listEntry value="LEADER;;LEADER;1;0"/>
+        <listEntry value="CANDIDATE;;CANDIDATE;1;0"/>
+        <listEntry value="MaxMsgs;;1;0;0"/>
     </listAttribute>
-    <stringAttribute key="modelParameterContraint" value=""/>
+    <stringAttribute key="modelParameterContraint" value="\A s \in Servers:&#10;  /\ Cardinality(vote_requests[s]) &lt;= MaxMsgs&#10;  /\ Cardinality(vote_responses[s]) &lt;= MaxMsgs"/>
     <listAttribute key="modelParameterDefinitions"/>
     <stringAttribute key="modelParameterModelValues" value="{}"/>
     <stringAttribute key="modelParameterNewDefinitions" value=""/>
